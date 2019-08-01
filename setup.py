@@ -17,6 +17,8 @@ import sys
 
 import os
 import shutil
+from time import sleep
+
 from setuptools import Command
 from setuptools import setup
 from setuptools.command.install import install
@@ -24,9 +26,11 @@ from setuptools.command.install import install
 if sys.version_info[0] >= 3:
     # Python 3
     from urllib.request import urlopen
+    from urllib.error import HTTPError
 else:
     # Python 2
     from urllib2 import urlopen
+    from urllib2 import HTTPError
 
 #
 # This script modifies the basic setuptools by adding some functionality to the standard
@@ -88,6 +92,9 @@ REMOTE_MAVEN_PACKAGES = [
     ('commons-logging', 'commons-logging', '1.1.3')
 ]
 
+MAX_URL_DOWNLOAD_ATTEMPTS = 5
+RETRY_CODES = [429, 502, 504]
+
 
 class MavenJarDownloader:
 
@@ -145,9 +152,8 @@ Which will download the required jars and rerun the install.
         """
         Downloads a file at the url to the destination.
         """
-        print('Attempting to retrieve remote jar {url}'.format(url=url))
         try:
-            response = urlopen(url)
+            response = self.make_request_with_backoff(url)
             with open(dest, 'wb') as dest_file:
                 shutil.copyfileobj(response, dest_file)
             print('Saving {url} -> {dest}'.format(url=url, dest=dest))
@@ -163,6 +169,21 @@ Which will download the required jars and rerun the install.
             else:
                 url = self.package_url(package[0], package[1], package[2])
                 self.download_file(url, dest)
+
+    def make_request_with_backoff(self, url):
+        for attempt_number in range(MAX_URL_DOWNLOAD_ATTEMPTS):
+            print('Attempting to retrieve remote jar {url}'.format(url=url))
+            try:
+                return urlopen(url)
+            except HTTPError as e:
+                if e.code in RETRY_CODES:
+                    sleep_time = 2 ** attempt_number
+                    print('Throttling response received. Sleeping {} seconds and trying again.'.format(sleep_time))
+                    sleep(sleep_time)
+                else:
+                    raise
+
+        raise Exception('"429 Too Many Requests" responses received.')
 
 
 class DownloadJarsCommand(Command):
